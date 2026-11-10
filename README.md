@@ -1,47 +1,60 @@
-# 皮碗方向识别：从模型输出到可靠工程集成
+# 皮碗正反识别：ONNX 权重与工程集成
 
-这是一个经过抽象重写的技术分享项目，讨论视觉方向识别中的推理契约、图像一致性、后处理与当前帧结果校验。只提供通用方法和合成测试，不包含企业名称、真实图片、训练数据、模型权重、生产工程、设备配置、现场参数或业务统计。
+分享高、低压皮碗正反识别的实际 ONNX 权重、CPU 推理代码、Windows C++ 原生推理与 VisionMaster C# 接入脚本。内容覆盖 ROI、预处理一致性、最高分方向判定、异常处理及宿主集成。
 
-示例不连接相机、PLC 或执行机构，也不提供已训练模型；运行结果不能直接用于生产控制。
+已去除训练元数据中的用户名和本地训练路径。模型图与权重数值保持不变。第三方作者与许可证署名保留，不包含项目使用方的公司、客户或人员名称。
 
-## 技术路线
+## 直接运行
 
-```mermaid
-flowchart LR
-    A[采集当前帧] --> B[固定图像编码与帧标识]
-    B --> C[校验尺寸与模型契约]
-    C --> D[按契约裁剪或全图输入]
-    D --> E[Letterbox / RGB / NCHW / 归一化]
-    E --> F[ONNX 推理适配器]
-    F --> G[方向判定]
-    G --> H[核对请求与帧标识]
-    H --> I[输出当前请求结果]
-```
-
-工程路线可以由独立 Python 推理服务与 C# 通信桥起步，再根据宿主接口、节拍与维护成本评估进程内 C++ 推理。两种方案都必须保持输入契约和当前帧身份一致。
-
-## 快速运行
-
-Python 3.10+，仅使用标准库：
+Python 3.10–3.12：
 
 ```bash
+pip install -r requirements.txt
+python inference.py --station high --image samples/high/front.jpg
+python inference.py --station low --image samples/low/front.jpg
 python -m unittest discover -s tests -v
-python examples/demo.py
+python tools/check_models.py
 ```
 
-`src/seal_vision/policy.py` 演示最高分方向判定与结果关联。所有分数、框和标识均为人为构造。门槛必须由调用者明确传入，不内置真实部署值。它没有加载或模拟训练好的识别模型。
+两份权重直接存放在 models/，无需另行下载。samples/ 包含真实工件图片，供最小回放使用；部分图片来自既有训练或验证样本，不能用于估计总体准确率。check_models.py 验证摘要并运行六张图，不自动调整门槛。
 
-## 值得分享的工程经验
+## 模型与决策
 
-1. **图像也是接口。** 灰度转换、JPEG 编码器、质量、缩放和重复编码都可能改变张量。对比系统时先对比相同字节，再对比裁剪结果与张量，最后比较输出。
-2. **裁剪只能发生在契约指定的一层。** 全图包装模型可能已经包含 ROI。外部重复裁剪会让部署偏离训练输入。
-3. **候选数不等于工件数。** 是否采用 NMS、如何解释多候选，取决于导出模型的输出语义，不能直接用输出行数否决工件。
-4. **方向与放行规则分开。** 最高分方向、反面优先、多框否决是不同策略。额外规则会改变系统行为，必须逐条解释并单独验证。
-5. **异常不能沿用上次结果。** 请求 ID 与帧 ID 必须匹配；超时、错帧、输出异常都产生本次不可放行结果。
-6. **离线回放不是产线验收。** 合成单元测试、历史图片回放、真实相机连续运行和执行机构验证是不同证据。
+| 模型 | 输入 | 预处理 | 输出 |
+|---|---|---|---|
+| 高压 high.onnx | [1,3,640,640] | 从 4024×3036 原图外部裁剪 ROI，再 letterbox / RGB / NCHW / ÷255 | [1,300,6] |
+| 低压 low.onnx | [1,3,3036,4024] | 外部只做 RGB / NCHW / 归一化，ROI 和缩放在图内 | [1,300,6] |
 
-详细设计见 [工程笔记](docs/engineering.md)，发布范围见 [隐私边界](docs/publication-scope.md)。
+每行输出为 x1,y1,x2,y2,score,class，类别 0 正面、1 反面。取所有输出行中最高分的一行，同分保留第一行；分数 ≥0.30 时按方向输出正面 OK、反面 NG，否则未检出 NG。没有反面优先、多框否决、面积否决或额外坐标否决。异常输出 NG，不能沿用上一帧 OK。
 
-## 内容边界
+profiles.ini 保留实际 ROI 与线程配置。兼容字段 OK、MinArea 不参与最终最高分决策；实际使用 Candidate 作为门槛。0.30 是此版本工程配置，不是已证明适用于所有场景的最佳值。
 
-本仓库是教学实现，不是原生产源码的脱敏副本，不复现任何组织的实际参数、精度、节拍或上线状态。未附带第三方 SDK、运行库和许可受限文件。仓库没有授予任何原项目或第三方资产的使用权。
+## 代码结构
+
+- inference.py：新增的可独立运行 Python 入口，复用实际模型契约与最终方向策略。
+- native/cup_native_top1.cpp：实际 Windows C API 推理源码，包含高压插值、低压全图输入、哈希校验、线程隔离与 ABI。
+- integration/VM_High.cs、VM_Low.cs：实际宿主脚本，发布 OK/NG、状态、分数和请求 ID。
+- src/seal_vision/：教学策略示例；其更严格的坏框检查不代表原生版本最终规则。
+- [工程笔记](docs/engineering.md)：编码、帧身份、验证与回退经验。
+- [模型说明](models/MODEL_CARD.md)：来源、许可证、元数据清理与限制。
+
+## Windows 原生集成
+
+需要 Windows x64、C++17 编译器、CMake 及 ONNX Runtime 1.20.1 的 C API 头文件：
+
+```powershell
+cmake -S native -B build -A x64 -DONNXRUNTIME_INCLUDE_DIR=C:/onnxruntime/include
+cmake --build build --config Release
+```
+
+独立部署目录需要 profiles.ini、models/ 和 bin/。将构建的 CupVmInference20261030.dll 放进 bin/；将官方 ONNX Runtime 1.20.1 x64 的 onnxruntime.dll 复制为 bin/CupOrt1201.dll，配套 DLL 也放入该目录。按实际需要安装官方 VC++ x64 运行库。
+
+导入 C# 脚本前设置 NativeRoot，按宿主 SDK 配置图像输入 in0、计数输入 num 和脚本输出。宿主版本及流程由使用者自行适配。仓库不包含厂商 SDK、完整设备工程或第三方运行库二进制，由各自官方渠道提供。CMake 入口与 Python 入口是本次分享新增内容，CMake 构建尚未在公开 CI 中执行。
+
+## 验证与许可
+
+本地验证包括公开权重与原权重输出对比、六张真实图片回放及合成测试。GitHub CI 执行合成测试和真实模型回放。小样本通过不等于产线精度或节拍验收。
+
+权重原有元数据标注 Ultralytics AGPL-3.0，随附许可正文。第三方许可继续适用，见 [第三方说明](THIRD_PARTY_NOTICES.md) 与 [公开范围](docs/publication-scope.md)。模型适用于特定视角、尺寸和 ROI，迁移时需重新验证。
+
+本仓库自有源码按 AGPL-3.0 发布，见 LICENSE。第三方内容仍保留原许可与署名。

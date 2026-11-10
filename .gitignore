@@ -2,13 +2,11 @@ __pycache__/
 *.py[cod]
 .venv/
 .env*
-*.onnx
 *.pt
 *.pth
 *.sol
 *.dll
 *.exe
-*.jpg
 *.jpeg
 *.png
 *.bmp
@@ -16,6 +14,6 @@ __pycache__/
 *.log
 *.jsonl
 data/
-models/
 logs/
 private/
+build/

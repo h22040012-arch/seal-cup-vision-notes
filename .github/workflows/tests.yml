@@ -12,3 +12,5 @@ jobs:
           python-version: '3.11'
       - run: python -m unittest discover -s tests -v
       - run: python examples/demo.py
+      - run: pip install -r requirements.txt
+      - run: python tools/check_models.py
